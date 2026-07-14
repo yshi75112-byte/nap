@@ -1266,6 +1266,7 @@
       }
       if (previousParentId !== nextParentId) currentViewId = nextParentId;
       saveState();
+      selectedRegionId = null;
       render();
       hint.textContent = previousParentId === nextParentId
         ? `区域信息已更新：${getRegionDisplayName(region)}。`
