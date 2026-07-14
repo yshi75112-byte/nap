@@ -221,6 +221,27 @@
       text-anchor: middle;
     }
 
+    .region-label.is-unnamed {
+      fill: #64748b;
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+
+    .region-group:hover .region-label.is-unnamed,
+    .region-group:focus .region-label.is-unnamed {
+      opacity: 1;
+    }
+
+    .region-group:focus {
+      outline: none;
+    }
+
+    .region-group:focus .region-shape {
+      stroke-width: 3;
+    }
+
     .draft-line {
       fill: none;
       stroke: #1f2937;
@@ -267,6 +288,13 @@
 
     .breadcrumb button:hover {
       background: rgba(47, 81, 54, 0.08);
+    }
+
+    .hint .hint-action {
+      min-height: 26px;
+      margin-left: 8px;
+      padding: 0 8px;
+      color: #2f5136;
     }
 
     .story-card {
@@ -566,14 +594,14 @@
         <div class="empty-state" id="emptyState">
           <div>
             <strong>先画一个地方</strong>
-            <span>按住并拖动画出封闭区域，松手后给它取名。</span>
+            <span>按住并拖动画出封闭区域，稍后可右击添加名称。</span>
           </div>
         </div>
       </div>
 
       <div class="hud">
         <div class="breadcrumb" id="breadcrumb"></div>
-        <div class="hint" id="hint">柳叶笔已选中。画完会自动闭合并弹出命名。</div>
+        <div class="hint" id="hint">柳叶笔已选中。画完会自动闭合，右击区域可添加名称。</div>
       </div>
 
       <aside class="layer-panel" id="layerPanel">
@@ -603,7 +631,8 @@
       <div class="field">
         <label for="regionType">类型</label>
         <select id="regionType" name="type">
-          <option value="city" selected>城市</option>
+          <option value="region" selected>区域</option>
+          <option value="city">城市</option>
           <option value="family">家族</option>
           <option value="country">国家</option>
           <option value="continent">大陆</option>
@@ -628,6 +657,7 @@
     const palette = document.getElementById("palette");
     const modal = document.getElementById("regionModal");
     const form = document.getElementById("regionForm");
+    const modalTitle = document.getElementById("modalTitle");
     const nameInput = document.getElementById("regionName");
     const typeInput = document.getElementById("regionType");
     const summaryInput = document.getElementById("regionSummary");
@@ -649,6 +679,7 @@
     const projectStatus = document.getElementById("projectStatus");
 
     const regionTypes = {
+      region: "区域",
       city: "城市",
       family: "家族",
       country: "国家",
@@ -660,8 +691,7 @@
     let selectedTool = "draw";
     let isDrawing = false;
     let points = [];
-    let pendingRegion = null;
-    let suggestedParentId = null;
+    let editingRegionId = null;
     let currentViewId = null;
     let regions = [];
     let layers = [];
@@ -776,7 +806,7 @@
       svg.style.cursor = tool === "eyedropper" ? "copy" : "crosshair";
       hint.textContent = tool === "eyedropper"
         ? "吸管已选中。点击任意地域取色。"
-        : "柳叶笔已选中。画完会自动闭合并弹出命名。";
+        : "柳叶笔已选中。画完会自动闭合，右击区域可添加名称。";
     }
 
     function getSvgPoint(event) {
@@ -840,33 +870,37 @@
 
     function findSuggestedParent(pathPoints) {
       const center = getCentroid(pathPoints);
-      const candidates = regions.filter((region) => pointInPolygon(center, region.points));
+      const candidates = getVisibleRegions().filter((region) => pointInPolygon(center, region.points));
       if (!candidates.length) return null;
       return candidates[candidates.length - 1];
     }
 
-    function openNamingModal(pathPoints) {
-      const parent = findSuggestedParent(pathPoints);
-      suggestedParentId = parent ? parent.id : currentViewId;
-      pendingRegion = {
-        points: pathPoints,
-        color: selectedColor
-      };
+    function isRegionNamed(region) {
+      return Boolean(region && typeof region.name === "string" && region.name.trim());
+    }
+
+    function getRegionDisplayName(region) {
+      return isRegionNamed(region) ? region.name.trim() : "未命名";
+    }
+
+    function openRegionEditor(region) {
+      editingRegionId = region.id;
       form.reset();
-      typeInput.value = "city";
+      modalTitle.textContent = isRegionNamed(region) ? "编辑这个地方" : "给这个地方取名";
+      nameInput.value = isRegionNamed(region) ? region.name.trim() : "";
+      typeInput.value = region.type || "region";
+      summaryInput.value = region.summary || "";
+      const parent = region.parentId ? getRegionById(region.parentId) : null;
       ownershipHint.textContent = parent
-        ? `已归属到「${parent.name}」。完成后仍可在后续版本中更改。`
-        : currentViewId
-          ? `将归属到当前视图「${getRegionById(currentViewId).name}」。`
-          : "这个城市属于哪个国家？第一版可先跳过，之后再补上级。";
+        ? `属于「${getRegionDisplayName(parent)}」。`
+        : "位于世界层级。";
       modal.classList.add("is-open");
       window.setTimeout(() => nameInput.focus(), 40);
     }
 
     function closeNamingModal() {
       modal.classList.remove("is-open");
-      pendingRegion = null;
-      suggestedParentId = null;
+      editingRegionId = null;
     }
 
     function getRegionById(id) {
@@ -903,7 +937,7 @@
         breadcrumb.append(" > ");
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = region.name;
+        button.textContent = getRegionDisplayName(region);
         button.addEventListener("click", () => {
           currentViewId = region.id;
           render();
@@ -932,10 +966,10 @@
         color.style.background = region ? region.color : "#e2e8f0";
 
         const name = document.createElement("span");
-        name.textContent = layer.name;
+        name.textContent = layer.name || "未命名";
 
         const type = document.createElement("span");
-        type.textContent = region ? regionTypes[region.type] : "空白";
+        type.textContent = region ? (regionTypes[region.type] || "区域") : "空白";
         type.style.color = "#64748b";
         type.style.fontSize = "12px";
 
@@ -952,7 +986,7 @@
       const emptyText = emptyState.querySelector("span");
       if (!regions.length) {
         emptyTitle.textContent = "先画一个地方";
-        emptyText.textContent = "按住并拖动画出封闭区域，松手后给它取名。";
+        emptyText.textContent = "按住并拖动画出封闭区域，稍后可右击添加名称。";
       } else {
         emptyTitle.textContent = "这里还没有子地域";
         emptyText.textContent = "继续画一个城市、家族领地或据点，让这个层级长出来。";
@@ -975,9 +1009,15 @@
         label.setAttribute("y", center.y);
         label.setAttribute("dy", "0.35em");
         label.classList.add("region-label");
-        label.textContent = region.name;
+        label.textContent = getRegionDisplayName(region);
+        if (!isRegionNamed(region)) label.classList.add("is-unnamed");
 
         group.append(path, label);
+
+        const displayName = getRegionDisplayName(region);
+        group.setAttribute("tabindex", "0");
+        group.setAttribute("role", "button");
+        group.setAttribute("aria-label", `${displayName}，双击进入，右击编辑`);
 
         group.addEventListener("mouseenter", (event) => showStoryCard(region, event));
         group.addEventListener("mousemove", (event) => positionStoryCard(event));
@@ -994,6 +1034,19 @@
             selectedColor = region.color;
             updateActiveSwatch(region.color);
             setTool("draw");
+          }
+        });
+        group.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          hideStoryCard();
+          openRegionEditor(region);
+        });
+        group.addEventListener("keydown", (event) => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            hideStoryCard();
+            openRegionEditor(region);
           }
         });
 
@@ -1021,9 +1074,13 @@
     }
 
     function showStoryCard(region, event) {
+      if (!isRegionNamed(region)) {
+        hideStoryCard();
+        return;
+      }
       storyCard.innerHTML = `
-        <h2>${escapeHtml(region.name)}</h2>
-        <div class="story-meta">${regionTypes[region.type]}${region.parentId ? ` · 属于 ${escapeHtml(getRegionById(region.parentId).name)}` : ""}</div>
+        <h2>${escapeHtml(getRegionDisplayName(region))}</h2>
+        <div class="story-meta">${regionTypes[region.type] || "区域"}${region.parentId ? ` · 属于 ${escapeHtml(getRegionDisplayName(getRegionById(region.parentId)))}` : ""}</div>
         <p>${escapeHtml(region.summary || "还没有简介")}</p>
         <div class="story-chars">
           ${(region.characterIds.length ? region.characterIds : ["暂无关联角色"]).map((name) => `<span class="chip">${escapeHtml(name)}</span>`).join("")}
@@ -1062,7 +1119,7 @@
     }
 
     function startDrawing(event) {
-      if (selectedTool !== "draw" || modal.classList.contains("is-open")) return;
+      if (event.button !== 0 || selectedTool !== "draw" || modal.classList.contains("is-open")) return;
       isDrawing = true;
       points = [getSvgPoint(event)];
       draftPath.setAttribute("d", pointsToPath(points, false));
@@ -1078,7 +1135,7 @@
     function finishDrawing(event) {
       if (!isDrawing) return;
       isDrawing = false;
-      svg.releasePointerCapture(event.pointerId);
+      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
       const pathPoints = simplifyPoints(points);
       points = [];
       draftPath.setAttribute("d", "");
@@ -1088,14 +1145,35 @@
         return;
       }
 
-      openNamingModal(pathPoints);
+      const parent = findSuggestedParent(pathPoints);
+      const region = createRegion({
+        name: "",
+        type: "region",
+        summary: "",
+        points: pathPoints,
+        color: selectedColor,
+        parentId: parent ? parent.id : currentViewId
+      });
+
+      if (region.parentId) currentViewId = region.parentId;
+      saveState();
+      render();
+      showCreatedRegionHint(region);
+    }
+
+    function cancelDrawing(event) {
+      if (!isDrawing) return;
+      isDrawing = false;
+      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+      points = [];
+      draftPath.setAttribute("d", "");
     }
 
     function createRegion(data) {
       const now = new Date().toISOString();
       const region = {
         id: `region-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        name: data.name,
+        name: typeof data.name === "string" ? data.name.trim() : "",
         type: data.type,
         parentId: data.parentId || null,
         points: data.points,
@@ -1123,15 +1201,43 @@
       return region;
     }
 
+    function showCreatedRegionHint(region) {
+      const parent = region.parentId ? getRegionById(region.parentId) : null;
+      const location = parent ? `，归属到「${getRegionDisplayName(parent)}」` : "，位于世界层级";
+      hint.textContent = `已创建未命名区域${location}。移入可查看，右击添加名称。`;
+
+      const undoButton = document.createElement("button");
+      undoButton.type = "button";
+      undoButton.className = "hint-action";
+      undoButton.textContent = "撤销刚才绘制";
+      undoButton.addEventListener("click", () => {
+        const hasChildren = regions.some((item) => item.parentId === region.id);
+        if (hasChildren) {
+          hint.textContent = "这个区域已有下级，不能直接撤销。";
+          return;
+        }
+        regions = regions.filter((item) => item.id !== region.id);
+        layers = layers.filter((item) => item.regionId !== region.id);
+        if (currentViewId === region.id) currentViewId = region.parentId || null;
+        saveState();
+        render();
+        hint.textContent = "已撤销刚才绘制的区域。";
+      });
+      hint.appendChild(undoButton);
+    }
+
     function exportPng() {
       const width = svg.clientWidth;
       const height = svg.clientHeight;
       const visibleRegions = getVisibleRegions();
       const regionMarkup = visibleRegions.map((region) => {
         const center = getCentroid(region.points);
+        const labelMarkup = isRegionNamed(region)
+          ? `<text x="${center.x}" y="${center.y}" dy="0.35em" text-anchor="middle" font-family="Microsoft YaHei, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2937" stroke="rgba(255,255,255,0.94)" stroke-width="4" paint-order="stroke">${escapeHtml(region.name.trim())}</text>`
+          : "";
         return `
           <path d="${pointsToPath(region.points)}" fill="${region.color}" fill-opacity="0.74" stroke="rgba(31,37,32,0.8)" stroke-width="2.2" stroke-linejoin="round"/>
-          <text x="${center.x}" y="${center.y}" dy="0.35em" text-anchor="middle" font-family="Microsoft YaHei, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2937" stroke="rgba(255,255,255,0.94)" stroke-width="4" paint-order="stroke">${escapeHtml(region.name)}</text>
+          ${labelMarkup}
         `;
       }).join("");
       const svgText = `
@@ -1160,7 +1266,7 @@
             const currentRegion = currentViewId ? getRegionById(currentViewId) : null;
             const result = await window.desktopAPI.exportPng({
               dataUrl,
-              suggestedName: currentRegion ? currentRegion.name : currentProjectName
+              suggestedName: currentRegion && isRegionNamed(currentRegion) ? currentRegion.name.trim() : currentProjectName
             });
             if (!result.canceled) hint.textContent = "PNG 已导出。";
           } catch (error) {
@@ -1206,33 +1312,39 @@
     svg.addEventListener("pointerdown", startDrawing);
     svg.addEventListener("pointermove", continueDrawing);
     svg.addEventListener("pointerup", finishDrawing);
-    svg.addEventListener("pointercancel", finishDrawing);
+    svg.addEventListener("pointercancel", cancelDrawing);
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (!pendingRegion) return;
+      const region = getRegionById(editingRegionId);
+      if (!region) return;
       const name = nameInput.value.trim();
       if (!name) return;
 
-      const region = createRegion({
-        name,
-        type: typeInput.value,
-        summary: summaryInput.value.trim(),
-        points: pendingRegion.points,
-        color: pendingRegion.color,
-        parentId: suggestedParentId
-      });
-
-      if (region.parentId) {
-        currentViewId = region.parentId;
+      region.name = name;
+      region.type = typeInput.value;
+      region.summary = summaryInput.value.trim();
+      region.updatedAt = new Date().toISOString();
+      const layer = layers.find((item) => item.regionId === region.id);
+      if (layer) {
+        layer.name = name;
+        layer.updatedAt = region.updatedAt;
       }
       saveState();
       closeNamingModal();
-      hint.textContent = `已创建「${region.name}」。双击可进入它的下级视图。`;
+      hint.textContent = `已保存「${region.name}」。双击可进入它的下级视图。`;
       render();
     });
 
     cancelRegion.addEventListener("click", closeNamingModal);
+    modal.addEventListener("pointerdown", (event) => {
+      if (event.target === modal) closeNamingModal();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && modal.classList.contains("is-open")) {
+        closeNamingModal();
+      }
+    });
     drawTool.addEventListener("click", () => setTool("draw"));
     eyedropperTool.addEventListener("click", () => setTool("eyedropper"));
     toggleLayers.addEventListener("click", () => layerPanel.classList.toggle("is-open"));
