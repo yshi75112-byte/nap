@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OC Map Studio Prototype</title>
+  <title>OC Map Studio</title>
   <style>
     :root {
       --paper: #efe1bf;
@@ -129,6 +129,10 @@
     .brand span {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .brand span.is-dirty {
+      color: #8f2635;
     }
 
     .palette {
@@ -526,7 +530,7 @@
     <header class="topbar">
       <div class="brand">
         <strong>OC Map Studio</strong>
-        <span>画 -> 命名 -> 归属</span>
+        <span id="projectStatus">正在载入项目…</span>
       </div>
 
       <div class="toolbar" aria-label="工具栏">
@@ -546,6 +550,9 @@
       <div class="palette" id="palette" aria-label="色板"></div>
 
       <div class="actions">
+        <button class="desktop-only" id="newProjectButton" title="新建项目 (Ctrl+N)">新建</button>
+        <button class="desktop-only" id="openProjectButton" title="打开项目 (Ctrl+O)">打开</button>
+        <button class="desktop-only" id="saveProjectButton" title="保存项目 (Ctrl+S)">保存</button>
         <button id="exportPngButton" title="导出 PNG">导出</button>
       </div>
     </header>
@@ -636,6 +643,10 @@
     const drawTool = document.getElementById("drawTool");
     const eyedropperTool = document.getElementById("eyedropperTool");
     const exportPngButton = document.getElementById("exportPngButton");
+    const newProjectButton = document.getElementById("newProjectButton");
+    const openProjectButton = document.getElementById("openProjectButton");
+    const saveProjectButton = document.getElementById("saveProjectButton");
+    const projectStatus = document.getElementById("projectStatus");
 
     const regionTypes = {
       city: "城市",
@@ -654,6 +665,92 @@
     let currentViewId = null;
     let regions = [];
     let layers = [];
+    const isDesktop = Boolean(window.desktopAPI);
+    let projectRevision = 0;
+    let projectDirty = false;
+    let currentProjectPath = null;
+    let currentProjectName = "未命名项目";
+
+    function getProjectDocument() {
+      return {
+        regions,
+        layers,
+        currentViewId
+      };
+    }
+
+    function updateProjectStatus(metadata = {}) {
+      if (Object.prototype.hasOwnProperty.call(metadata, "filePath")) {
+        currentProjectPath = metadata.filePath || null;
+      }
+      if (metadata.displayName) currentProjectName = metadata.displayName;
+      if (typeof metadata.dirty === "boolean") projectDirty = metadata.dirty;
+
+      const stateLabel = projectDirty
+        ? "未保存"
+        : currentProjectPath
+          ? "已保存"
+          : "尚未保存";
+      projectStatus.textContent = `${currentProjectName} · ${stateLabel}`;
+      projectStatus.classList.toggle("is-dirty", projectDirty);
+    }
+
+    function markProjectChanged() {
+      projectRevision += 1;
+      projectDirty = true;
+      updateProjectStatus({ dirty: true });
+      window.desktopAPI.updateProject({
+        document: getProjectDocument(),
+        revision: projectRevision
+      });
+    }
+
+    function applyProject(result) {
+      const document = result.document || {};
+      regions = Array.isArray(document.regions) ? document.regions : [];
+      layers = Array.isArray(document.layers) ? document.layers : [];
+      currentViewId = typeof document.currentViewId === "string" ? document.currentViewId : null;
+      if (currentViewId && !regions.some((region) => region.id === currentViewId)) {
+        currentViewId = null;
+      }
+      projectRevision = Number.isInteger(result.revision) ? result.revision : 0;
+      updateProjectStatus(result);
+      hideStoryCard();
+      render();
+    }
+
+    async function runProjectCommand(command) {
+      if (!isDesktop) return;
+
+      try {
+        let result = null;
+        if (command === "new") result = await window.desktopAPI.newProject();
+        if (command === "open") result = await window.desktopAPI.openProject();
+        if (command === "save") {
+          result = await window.desktopAPI.saveProject({
+            document: getProjectDocument(),
+            revision: projectRevision
+          });
+        }
+        if (command === "save-as") {
+          result = await window.desktopAPI.saveProjectAs({
+            document: getProjectDocument(),
+            revision: projectRevision
+          });
+        }
+
+        if (!result || result.canceled) return;
+        if (result.document) {
+          applyProject(result);
+          hint.textContent = command === "new" ? "已创建空白项目。" : `已打开「${result.displayName}」。`;
+        } else {
+          updateProjectStatus(result);
+          hint.textContent = `项目已保存到「${result.displayName}」。`;
+        }
+      } catch (error) {
+        hint.textContent = `操作失败：${error.message}`;
+      }
+    }
 
     function createSwatches() {
       colors.forEach((color, index) => {
@@ -1023,7 +1120,6 @@
 
       regions.push(region);
       layers.push(layer);
-      saveState();
       return region;
     }
 
@@ -1048,7 +1144,7 @@
       const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
       const url = URL.createObjectURL(blob);
 
-      image.onload = () => {
+      image.onload = async () => {
         const canvas = document.createElement("canvas");
         canvas.width = svg.clientWidth;
         canvas.height = svg.clientHeight;
@@ -1058,16 +1154,35 @@
         context.drawImage(image, 0, 0);
         URL.revokeObjectURL(url);
 
-        const link = document.createElement("a");
-        link.download = "oc-map.png";
-        link.href = canvas.toDataURL("image/png");
-        link.click();
+        const dataUrl = canvas.toDataURL("image/png");
+        if (isDesktop) {
+          try {
+            const currentRegion = currentViewId ? getRegionById(currentViewId) : null;
+            const result = await window.desktopAPI.exportPng({
+              dataUrl,
+              suggestedName: currentRegion ? currentRegion.name : currentProjectName
+            });
+            if (!result.canceled) hint.textContent = "PNG 已导出。";
+          } catch (error) {
+            hint.textContent = `PNG 导出失败：${error.message}`;
+          }
+        } else {
+          const link = document.createElement("a");
+          link.download = "oc-map.png";
+          link.href = dataUrl;
+          link.click();
+        }
       };
 
       image.src = url;
     }
 
     function saveState() {
+      if (isDesktop) {
+        markProjectChanged();
+        return;
+      }
+
       localStorage.setItem("oc-map-studio-prototype", JSON.stringify({
         regions,
         layers,
@@ -1110,8 +1225,8 @@
 
       if (region.parentId) {
         currentViewId = region.parentId;
-        saveState();
       }
+      saveState();
       closeNamingModal();
       hint.textContent = `已创建「${region.name}」。双击可进入它的下级视图。`;
       render();
@@ -1122,10 +1237,52 @@
     eyedropperTool.addEventListener("click", () => setTool("eyedropper"));
     toggleLayers.addEventListener("click", () => layerPanel.classList.toggle("is-open"));
     exportPngButton.addEventListener("click", exportPng);
+    newProjectButton.addEventListener("click", () => runProjectCommand("new"));
+    openProjectButton.addEventListener("click", () => runProjectCommand("open"));
+    saveProjectButton.addEventListener("click", () => runProjectCommand("save"));
 
-    createSwatches();
-    loadState();
-    render();
+    async function initializeApp() {
+      createSwatches();
+
+      if (!isDesktop) {
+        document.querySelectorAll(".desktop-only").forEach((element) => {
+          element.hidden = true;
+        });
+        currentProjectName = "浏览器草稿";
+        loadState();
+        updateProjectStatus({ displayName: currentProjectName, dirty: false });
+        render();
+        return;
+      }
+
+      window.desktopAPI.onCommand((command) => runProjectCommand(command));
+      window.desktopAPI.onProjectSaved((metadata) => {
+        const isLatestRevision = metadata.revision === projectRevision;
+        updateProjectStatus({
+          ...metadata,
+          dirty: isLatestRevision ? metadata.dirty : true
+        });
+        if (metadata.automatic && isLatestRevision) {
+          hint.textContent = "修改已自动保存。";
+        }
+      });
+      window.desktopAPI.onProjectError((error) => {
+        projectDirty = true;
+        updateProjectStatus({ dirty: true });
+        hint.textContent = error.message;
+      });
+
+      try {
+        const initialProject = await window.desktopAPI.getInitialProject();
+        applyProject(initialProject);
+      } catch (error) {
+        updateProjectStatus({ displayName: "未命名项目", dirty: false });
+        hint.textContent = `桌面项目初始化失败：${error.message}`;
+        render();
+      }
+    }
+
+    initializeApp();
   </script>
 </body>
 </html>

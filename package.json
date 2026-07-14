@@ -1,0 +1,54 @@
+{
+  "name": "oc-map-studio",
+  "version": "0.1.0",
+  "private": true,
+  "author": "OC Map Studio Contributors",
+  "author": "OC Map Studio Contributors",
+  "description": "A local-first desktop studio for drawing and organizing OC worlds.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron . --dev",
+    "start": "electron .",
+    "test": "node --test",
+    "test:desktop": "electron . --smoke-test",
+    "pack:win": "electron-builder --win --dir",
+    "dist:win": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "studio.ocmap.desktop",
+    "productName": "OC Map Studio",
+    "asar": true,
+    "files": [
+      "index.html",
+      "main.js",
+      "preload.js",
+      "project-file.js",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "OC-Map-Studio-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
